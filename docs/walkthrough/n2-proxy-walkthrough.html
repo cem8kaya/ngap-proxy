@@ -1,0 +1,880 @@
+<title>N2 Proxy Walkthrough</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout concept: a single fixed viewport, no page scroll. Stage (RAN left, proxy centre, core right) fills the left column;
+   narration and verbatim evidence stack in a fixed-width side column, so the diagram and its explanation are always in view together. */
+:root{
+  --bg:#eef1f5; --surface:#ffffff; --surface-2:#f6f8fa; --ink:#142032; --muted:#58697c;
+  --line:#c3ceda; --line-strong:#8c9bad;
+  --req:#b86e00; --resp:#08807a; --bad:#c23a3a; --ok:#2a8a4a; --proxy:#4a50c8; --proxy-tint:#e9eafa;
+  --shadow:0 1px 2px rgba(20,32,50,.06),0 8px 24px rgba(20,32,50,.06);
+  --font-ui:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0d131a; --surface:#151d28; --surface-2:#111823; --ink:#e3eaf2; --muted:#93a4b6;
+    --line:#2a384a; --line-strong:#52657c;
+    --req:#f0a53a; --resp:#3cc4ba; --bad:#ff6b6b; --ok:#5ed08a; --proxy:#9096ff; --proxy-tint:#1c2140;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0d131a; --surface:#151d28; --surface-2:#111823; --ink:#e3eaf2; --muted:#93a4b6;
+  --line:#2a384a; --line-strong:#52657c;
+  --req:#f0a53a; --resp:#3cc4ba; --bad:#ff6b6b; --ok:#5ed08a; --proxy:#9096ff; --proxy-tint:#1c2140;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--font-ui);font-size:14px;line-height:1.5;
+  padding-inline:16px;padding-block:12px;overflow:hidden}
+button,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--proxy);outline-offset:2px}
+
+.app{height:100%;max-width:1560px;margin-inline:auto;display:grid;
+  grid-template-columns:minmax(0,1fr) 380px;grid-template-rows:auto minmax(0,1fr);gap:10px 16px}
+
+/* header */
+.top{grid-column:1 / -1;display:flex;flex-wrap:wrap;gap:6px 20px;align-items:center;justify-content:space-between}
+.brand{display:flex;align-items:baseline;gap:12px;min-width:0}
+h1{margin:0;font-size:19px;line-height:1.2;font-weight:600;letter-spacing:-.01em}
+.kicker{margin:0;font:500 11.5px/1.2 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.tabs{display:flex;flex-wrap:wrap;gap:5px}
+.tab{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;
+  display:flex;gap:6px;align-items:baseline;font-size:13px;transition:border-color .15s,background .15s}
+.tab:hover{border-color:var(--line-strong)}
+.tab b{font:500 11px var(--font-mono);color:var(--muted)}
+.tab[aria-current="true"]{border-color:var(--proxy);background:var(--proxy-tint)}
+.tab[aria-current="true"] b{color:var(--proxy)}
+
+/* stage */
+.stage-card{grid-column:1;min-height:0;display:flex;flex-direction:column;background:var(--surface);
+  border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}
+.stage{flex:1 1 0;min-height:0;position:relative}
+svg#svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+.metrics{display:flex;flex-wrap:wrap;gap:4px 24px;padding:8px 14px;border-top:1px solid var(--line);background:var(--surface-2);min-height:46px;align-items:center}
+.metric{display:flex;align-items:baseline;gap:7px}
+.metric .v{font:500 20px/1 var(--font-mono);font-variant-numeric:tabular-nums}
+.metric .l{color:var(--muted);font-size:12.5px}
+.metric.bad .v{color:var(--bad)}
+.metric.ok .v{color:var(--ok)}
+.metric .v.pop{animation:pop .5s ease}
+@keyframes pop{0%{transform:scale(1.3)}100%{transform:scale(1)}}
+.controls{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 14px;border-top:1px solid var(--line)}
+.btn{background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:5px 12px;cursor:pointer;min-width:40px}
+.btn:hover:not(:disabled){border-color:var(--line-strong)}
+.btn:disabled{opacity:.4;cursor:default}
+.btn.primary{background:var(--proxy);border-color:var(--proxy);color:#fff;font-weight:500;min-width:84px}
+:root[data-theme="dark"] .btn.primary{color:#0d131a}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .btn.primary{color:#0d131a}}
+.controls .sp{flex:1}
+.speed{display:flex;gap:6px;align-items:center;color:var(--muted);font-size:12.5px}
+select{background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+.legend{display:flex;flex-wrap:wrap;gap:2px 16px;padding:6px 14px 8px;color:var(--muted);font-size:11.5px;border-top:1px solid var(--line)}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%}
+.legend i.line{width:18px;height:0;border-radius:0;border-top:2px solid var(--line-strong)}
+.legend i.lost{width:18px;height:0;border-radius:0;border-top:2px dashed var(--bad)}
+
+/* side column */
+.side{grid-column:2;min-height:0;display:flex;flex-direction:column;gap:10px}
+.narr,.evidence{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}
+.narr{flex:0 0 auto}
+.evidence{flex:1 1 0;min-height:0;overflow:hidden}
+.narr .step-n{margin:0 0 3px;font:500 11px var(--font-mono);color:var(--proxy);letter-spacing:.06em;text-transform:uppercase}
+.narr h2{margin:0 0 6px;font-size:16.5px;line-height:1.25;font-weight:600;text-wrap:balance}
+.narr p.body{margin:0;font-size:13.5px;line-height:1.5}
+.narr .swap{animation:in .35s ease}
+@keyframes in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.dots{display:flex;gap:5px;margin-top:12px;flex-wrap:wrap}
+.dot{width:22px;height:7px;border-radius:4px;border:0;padding:0;background:var(--line);cursor:pointer}
+.dot[aria-current="true"]{background:var(--proxy)}
+.dot.done{background:var(--line-strong)}
+.evidence h3{margin:0 0 8px;font:500 11px var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.ev-label{margin:10px 0 3px;font-size:12px;color:var(--muted)}
+.ev-label:first-of-type{margin-top:0}
+pre{margin:0;font:400 var(--evfs,11.5px)/1.4 var(--font-mono);background:var(--surface-2);border:1px solid var(--line);border-radius:6px;
+  padding:7px 9px;white-space:pre-wrap;overflow-wrap:anywhere}
+pre .hl{color:var(--proxy);font-weight:500}
+pre .req{color:var(--req)} pre .resp{color:var(--resp)} pre .ha{color:var(--ok)} pre .sw{color:var(--muted)} pre .bad{color:var(--bad)}
+pre .new{background:color-mix(in srgb,var(--proxy) 14%,transparent);display:block}
+.note{margin:8px 0 0;font-size:12px;color:var(--muted);line-height:1.45}
+.empty{color:var(--muted);font-size:12.5px}
+.src{margin:0;color:var(--muted);font-size:11px;line-height:1.4}
+.src code{font-family:var(--font-mono);font-size:10.5px}
+
+/* svg */
+.link{fill:none;stroke:var(--line-strong);stroke-width:2;stroke-dasharray:1;stroke-dashoffset:1;opacity:1;
+  transition:stroke-dashoffset .8s ease,opacity .5s ease,stroke .4s ease}
+.link.on{stroke-dashoffset:0}
+.link.fade{stroke-dashoffset:0;opacity:.09}
+.link.dim{stroke-dashoffset:0;opacity:.2}
+.link.down{stroke:var(--bad);stroke-dashoffset:0;stroke-dasharray:.014 .02}
+.link.px{stroke:var(--proxy)}
+.link.thin{stroke-width:1.6}
+svg.instant .link,svg.instant .node rect,svg.instant .proxy-g,svg.instant .bar rect{transition:none!important}
+.node rect{fill:var(--surface);stroke:var(--line-strong);stroke-width:1.5;transition:stroke .3s,fill .3s}
+.node .t{fill:var(--ink);font:600 14px var(--font-ui)}
+.node .m{fill:var(--muted);font:400 11px var(--font-mono)}
+.node .meta{fill:var(--ink);font:500 11.5px var(--font-mono);transition:opacity .4s}
+.node .st{font:500 11.5px var(--font-mono)}
+.node.down rect{stroke:var(--bad);fill:color-mix(in srgb,var(--bad) 9%,var(--surface))}
+.node.down .t{fill:var(--bad)}
+.node.frozen rect{stroke:var(--proxy);stroke-dasharray:6 4;fill:color-mix(in srgb,var(--proxy) 9%,var(--surface))}
+.node.drain rect{stroke:var(--req);fill:color-mix(in srgb,var(--req) 9%,var(--surface))}
+.gnb .gt{font:500 11px var(--font-mono);transition:opacity .4s}
+.proxy-g{transition:opacity .6s ease}
+.proxy-g rect.body{fill:var(--proxy-tint);stroke:var(--proxy);stroke-width:2}
+.proxy-g .t{fill:var(--ink);font:600 14px var(--font-ui)}
+.proxy-g .m{fill:var(--muted);font:400 11px var(--font-mono)}
+.proxy-g .k{fill:var(--proxy);font:500 11px var(--font-mono);transition:opacity .4s}
+.proxy-g .port{fill:var(--proxy)}
+.proxy-g .pl{fill:var(--proxy-tint);font:600 8px var(--font-mono)}
+.bar rect.track{fill:var(--line);opacity:.55}
+.bar rect.fill{fill:var(--proxy);transition:width .9s ease}
+.bar text{fill:var(--muted);font:500 10.5px var(--font-mono)}
+.scp rect.track{fill:var(--surface-2);stroke:var(--line-strong);stroke-width:1.2}
+.scp rect.fill{fill:var(--bad);opacity:.85;transition:width .9s ease}
+.scp text{fill:var(--ink);font:500 11px var(--font-mono)}
+.scp .cap{fill:var(--muted);font:400 10.5px var(--font-mono)}
+.pkt circle{stroke:var(--surface);stroke-width:2}
+.pkt text{font:500 11px var(--font-mono);paint-order:stroke;stroke:var(--surface);stroke-width:4px;stroke-linejoin:round}
+.pkt.req circle{fill:var(--req)} .pkt.req text{fill:var(--req)}
+.pkt.resp circle{fill:var(--resp)} .pkt.resp text{fill:var(--resp)}
+.pkt.sw circle,.pkt.hb circle{fill:var(--line-strong)} .pkt.sw text,.pkt.hb text{fill:var(--muted)}
+.pkt.bad circle{fill:var(--bad)} .pkt.bad text{fill:var(--bad)}
+.pkt.ok circle{fill:var(--ok)} .pkt.ok text{fill:var(--ok)}
+.mark line{stroke:var(--bad);stroke-width:3;stroke-linecap:round}
+.mark circle{fill:var(--surface);stroke:var(--bad);stroke-width:1.5}
+
+/* narrow screens: stack and let the page scroll (a fixed viewport cannot hold the layout) */
+@media (max-width:980px){
+  html,body{height:auto}
+  body{overflow:auto}
+  .app{display:flex;flex-direction:column;height:auto}
+  .stage{flex:none}
+  svg#svg{position:static;height:auto}
+  .evidence{overflow:visible}
+}
+@media (max-width:640px){
+  .node .t{font-size:27px} .node .m,.gnb .m{display:none} .node .meta,.node .st{font-size:17px} .gnb .gt{font-size:16px}
+  .proxy-g .t{font-size:25px} .proxy-g .m{display:none} .proxy-g .k{font-size:15px} .proxy-g .pl{font-size:12px}
+  .pkt text{font-size:21px;stroke-width:6px} .pkt circle{stroke-width:3px}
+  .bar text,.scp text,.scp .cap{font-size:16px}
+}
+@media (prefers-reduced-motion: reduce){
+  .link,.node rect,.proxy-g,.narr .swap,.bar rect,.gnb .gt{transition:none!important;animation:none!important}
+  .metric .v.pop{animation:none}
+}
+</style>
+
+<div class="app">
+  <header class="top">
+    <div class="brand"><h1>N2 load-balancer proxy</h1><p class="kicker">Open5GS + UERANSIM lab</p></div>
+    <nav class="tabs" id="tabs" aria-label="Scenes"></nav>
+  </header>
+
+  <section class="stage-card" aria-label="Animated topology">
+    <div class="stage">
+      <svg id="svg" viewBox="0 78 1000 462" preserveAspectRatio="xMidYMid meet" role="img"
+        aria-label="Topology of three gNBs, an N2 proxy and three AMFs. The narration beside it describes the current step."></svg>
+    </div>
+    <div class="metrics" id="metrics" aria-live="polite"></div>
+    <div class="controls">
+      <button class="btn" id="bPrev" aria-label="Previous step">&#9664; Back</button>
+      <button class="btn primary" id="bPlay" aria-label="Play">Play</button>
+      <button class="btn" id="bNext" aria-label="Next step">Next &#9654;</button>
+      <button class="btn" id="bRestart" aria-label="Restart this scene">Restart</button>
+      <span class="sp"></span>
+      <label class="speed">Speed
+        <select id="speed" aria-label="Playback speed">
+          <option value="0.5">0.5&times;</option><option value="1" selected>1&times;</option><option value="2">2&times;</option>
+        </select>
+      </label>
+    </div>
+    <div class="legend" aria-label="Legend">
+      <span><i style="background:var(--req)"></i>request</span>
+      <span><i style="background:var(--resp)"></i>response</span>
+      <span><i style="background:var(--ok)"></i>ok</span>
+      <span><i style="background:var(--bad)"></i>release / timeout</span>
+      <span><i style="background:var(--line-strong)"></i>heartbeat / swallowed</span>
+      <span><i class="line"></i>SCTP association</span>
+      <span><i class="lost"></i>lost</span>
+      <span>&larr; &rarr; step · space play</span>
+    </div>
+  </section>
+
+  <aside class="side">
+    <div class="narr" aria-live="polite">
+      <p class="step-n" id="stepN"></p>
+      <div id="stepText" class="swap"><h2 id="stepTitle"></h2><p class="body" id="stepBody"></p></div>
+      <div class="dots" id="dots" role="group" aria-label="Steps in this scene"></div>
+    </div>
+    <div class="evidence" id="evidence" aria-label="Evidence from the lab"></div>
+    <p class="src">Source: <code>01_N2_Master_Proxy_Lab_v2.ipynb</code>, <code>local_vm_daily_ops_v1.ipynb</code> (VM runs, 2026-10-11), <code>BASELINE.md</code>. Log lines are translated from Turkish; message order varies between runs; packet timing is illustrative.</p>
+  </aside>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var NS = "http://www.w3.org/2000/svg";
+  var RM = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function mk(tag, attrs, parent) {
+    var e = document.createElementNS(NS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+  function $(id) { return document.getElementById(id); }
+
+  /* ---------- geometry (viewBox 0 78 1000 462) ---------- */
+  var Y = [130, 270, 410];
+  var PORT = [225, 270, 315];
+  var BW = 172, BH = 90, GX = 24, AX = 804;
+  var PX = 415, PW = 170, PY = 160, PH = 220;
+  var GNB = [{ n: "gNB-A", ip: "127.0.0.11" }, { n: "gNB-B", ip: "127.0.0.12" }, { n: "gNB-C", ip: "127.0.0.13" }];
+  var AMF = [
+    { n: "AMF-1", ip: "127.0.0.5", cap: 100, ptr: 0 },
+    { n: "AMF-2", ip: "127.0.0.105", cap: 100, ptr: 1 },
+    { n: "AMF-3", ip: "127.0.0.205", cap: 50, ptr: 2 }
+  ];
+  function aOff(i) { return (i - 1) * 11; }
+  function dMesh(i, j) { return "M" + (GX + BW) + "," + Y[i] + " L" + AX + "," + (Y[j] + aOff(i)); }
+  function dGp(i) { var x1 = GX + BW; return "M" + x1 + "," + Y[i] + " C300," + Y[i] + " 300," + PORT[i] + " " + PX + "," + PORT[i]; }
+  function dBp(i, j) { var x1 = PX + PW; return "M" + x1 + "," + PORT[i] + " C700," + PORT[i] + " 700," + (Y[j] + aOff(i)) + " " + AX + "," + (Y[j] + aOff(i)); }
+
+  /* ---------- build the svg ---------- */
+  var svg = $("svg");
+  var gLinks = mk("g", {}, svg), gMarks = mk("g", {}, svg), gNodes = mk("g", {}, svg), gPkts = mk("g", {}, svg);
+  var mesh = [], gp = [], bp = [];
+  var i, j;
+  for (i = 0; i < 3; i++) {
+    mesh[i] = [];
+    for (j = 0; j < 3; j++) mesh[i][j] = mk("path", { d: dMesh(i, j), class: "link thin", pathLength: 1, id: "m" + i + j }, gLinks);
+  }
+  for (i = 0; i < 3; i++) gp[i] = mk("path", { d: dGp(i), class: "link px", pathLength: 1, id: "gp" + i }, gLinks);
+  for (i = 0; i < 3; i++) {
+    bp[i] = [];
+    for (j = 0; j < 3; j++) bp[i][j] = mk("path", { d: dBp(i, j), class: "link px thin", pathLength: 1, id: "bp" + i + j }, gLinks);
+  }
+
+  var gnbEl = [], amfEl = [];
+  GNB.forEach(function (g, k) {
+    var n = mk("g", { class: "node gnb", transform: "translate(" + GX + "," + (Y[k] - BH / 2) + ")" }, gNodes);
+    mk("rect", { width: BW, height: BH, rx: 7 }, n);
+    var t = mk("text", { class: "t", x: 14, y: 24 }, n); t.textContent = g.n;
+    var m = mk("text", { class: "m", x: 14, y: 42 }, n); m.textContent = g.ip;
+    var c = mk("text", { class: "m", x: 14, y: 60 }, n);
+    var gt = mk("text", { class: "gt", x: 14, y: 78 }, n);
+    gnbEl[k] = { c: c, gt: gt };
+  });
+  AMF.forEach(function (a, k) {
+    var n = mk("g", { class: "node amf", transform: "translate(" + AX + "," + (Y[k] - BH / 2) + ")" }, gNodes);
+    mk("rect", { width: BW, height: BH, rx: 7 }, n);
+    var t = mk("text", { class: "t", x: 14, y: 24 }, n); t.textContent = a.n;
+    var m = mk("text", { class: "m", x: 14, y: 42 }, n); m.textContent = a.ip;
+    var meta = mk("text", { class: "meta", x: 14, y: 60 }, n); meta.textContent = "cap " + a.cap + " · ptr " + a.ptr;
+    var st = mk("text", { class: "st", x: 14, y: 78 }, n);
+    var bar = mk("g", { class: "bar", transform: "translate(" + AX + "," + (Y[k] + BH / 2 + 7) + ")" }, gNodes);
+    mk("rect", { class: "track", width: BW - 40, height: 6, rx: 3 }, bar);
+    var fill = mk("rect", { class: "fill", width: 0, height: 6, rx: 3 }, bar);
+    var bt = mk("text", { x: BW - 34, y: 7 }, bar);
+    bar.style.opacity = 0;
+    amfEl[k] = { g: n, meta: meta, st: st, bar: bar, fill: fill, bt: bt };
+  });
+
+  var gProxy = mk("g", { class: "proxy-g" }, gNodes);
+  mk("rect", { class: "body", x: PX, y: PY, width: PW, height: PH, rx: 9 }, gProxy);
+  var pt = mk("text", { class: "t", x: PX + PW / 2, y: PY + 24, "text-anchor": "middle" }, gProxy); pt.textContent = "N2 LB proxy";
+  var pa = mk("text", { class: "m", x: PX + PW / 2, y: PY + 41, "text-anchor": "middle" }, gProxy); pa.textContent = "127.0.0.50:38412";
+  ["A", "B", "C"].forEach(function (L, k) {
+    [PX, PX + PW].forEach(function (x) {
+      mk("circle", { class: "port", cx: x, cy: PORT[k], r: 8 }, gProxy);
+      var l = mk("text", { class: "pl", x: x, y: PORT[k] + 3, "text-anchor": "middle" }, gProxy); l.textContent = L;
+    });
+  });
+  var pk = [0, 1, 2].map(function (k) { return mk("text", { class: "k", x: PX + PW / 2, y: PY + 160 + k * 18, "text-anchor": "middle" }, gProxy); });
+
+  var scpG = mk("g", { class: "scp" }, gNodes);
+  mk("rect", { class: "track", x: 560, y: 484, width: 416, height: 28, rx: 5 }, scpG);
+  var scpFill = mk("rect", { class: "fill", x: 560, y: 484, width: 0, height: 28, rx: 5 }, scpG);
+  var scpCap = mk("text", { class: "cap", x: 560, y: 478 }, scpG); scpCap.textContent = "5GC SBI path: AMF → SCP → AUSF → UDM → UDR";
+  var scpTx = mk("text", { x: 966, y: 502, "text-anchor": "end" }, scpG);
+  scpG.style.opacity = 0;
+
+  /* ---------- state ---------- */
+  var DEF = {
+    mesh: "off", amfMode: ["", "", ""], proxy: false, proxyDim: false, gp: "off", gpFocus: null, bp: "off", bpFocus: null,
+    cfg: "direct", gtag: [null, null, null], meta: "off", amfState: ["", "", ""], pk: ["", "", ""], bars: null,
+    cut: [], scp: null, metrics: [], log: 0
+  };
+  function merge(a, b) { var o = {}, k; for (k in a) o[k] = a[k]; for (k in b) o[k] = b[k]; return o; }
+  function F(path, cls, label, dur, delay, rev, extra) {
+    var o = { path: path, cls: cls, label: label || "", dur: dur || 900, delay: delay || 0, rev: !!rev }, k;
+    if (extra) for (k in extra) o[k] = extra[k];
+    return o;
+  }
+  function wrrSeq(w, n) {
+    var cur = [0, 0, 0], out = [], tot = w[0] + w[1] + w[2], k, q, b;
+    for (k = 0; k < n; k++) {
+      b = 0;
+      for (q = 0; q < 3; q++) { cur[q] += w[q]; if (cur[q] > cur[b]) b = q; }
+      cur[b] -= tot; out.push(b);
+    }
+    return out;
+  }
+  /* a stream of small UE packets: units = [{i: gNB, j: AMF, bad: bool, direct: bool}] */
+  function flood(units, gap, labelAt, badLabel) {
+    var out = [];
+    units.forEach(function (u, k) {
+      var d = k * gap;
+      if (u.direct) {
+        out.push(F("m" + u.i + u.j, u.bad ? "bad" : "req", k === labelAt ? badLabel : "", 800, d, false, { r: 5, end: u.bad ? "swallow" : "", swLabel: k === labelAt ? "✕ no reply" : "" }));
+      } else {
+        out.push(F("gp" + u.i, "req", "", 420, d, false, { r: 5 }));
+        out.push(F("bp" + u.i + u.j, u.bad ? "bad" : "req", "", 420, d + 430, false, { r: 5, end: u.bad ? "swallow" : "", swLabel: k === labelAt ? "✕ no reply" : "" }));
+      }
+    });
+    return out;
+  }
+  function mkUnits(n, badEvery, direct) {
+    var seq = wrrSeq([100, 100, 50], n), u = [];
+    for (var k = 0; k < n; k++) u.push({ i: k % 3, j: direct ? 0 : seq[k], bad: badEvery ? (k % badEvery === badEvery - 1) : false, direct: !!direct });
+    return u;
+  }
+
+  var P3 = { proxy: true, gp: "on", bp: "on", mesh: "fade", cfg: "proxy" };
+  var READY3 = ["READY", "READY", "READY"];
+
+  var SC = [
+    /* ===== 1 ===== */
+    {
+      tab: "The problem",
+      base: { cfg: "direct", meta: "cfg", metrics: [{ l: "SCTP associations", v: "0" }] },
+      intro: ["Scene 1 · Today", "Three gNBs, three AMFs, and no shared view",
+        "UERANSIM gNB-A, B and C (127.0.0.11 to .13) and three Open5GS AMFs (127.0.0.5, .105, .205) in one AMF set: region 2, set 1, pointers 0, 1, 2. Nothing is connected yet."],
+      steps: [
+        { t: "Full mesh: 3 × 3 = 9 associations",
+          b: "Each gNB lists all three AMFs in its own configuration and opens an SCTP association to every one. Which AMF receives a new UE is decided inside each gNB.",
+          pre: { mesh: "on" }, post: { metrics: [{ l: "SCTP associations", v: "9" }] } },
+        { t: "kill -9 on AMF-2",
+          b: "Its three associations drop: 9 become 6 (measured with ss -Sn, see BASELINE.md). The other six keep running, but each gNB handles the loss on its own. Nothing tracks which AMFs are alive or where AMF-2's UEs were.",
+          pre: { amfMode: ["", "down", ""] },
+          post: { amfMode: ["", "down", ""], amfState: ["", "DOWN", ""], metrics: [{ l: "SCTP associations", v: "6", tone: "bad" }] } },
+        { t: "The pool logic is copied into every RAN node",
+          b: "Pool membership, failover and load spreading all live in the gNBs. The aim of the project: give the RAN a single N2 endpoint and keep that logic in one place.",
+          pre: { gtag: [{ t: "own pool logic", c: "bad" }, { t: "own pool logic", c: "bad" }, { t: "own pool logic", c: "bad" }] },
+          post: { gtag: [{ t: "own pool logic", c: "bad" }, { t: "own pool logic", c: "bad" }, { t: "own pool logic", c: "bad" }] } }
+      ]
+    },
+    /* ===== 2 ===== */
+    {
+      tab: "Insert the proxy",
+      base: { mesh: "on", cfg: "direct", meta: "cfg", metrics: [{ l: "SCTP associations", v: "9" }] },
+      intro: ["Scene 2 · Topology change", "One component between the RAN and the core",
+        "Same lab, AMF-2 restored. The change is small on paper: the proxy takes over every connection the gNBs used to make to the AMFs."],
+      steps: [
+        { t: "Insert the N2 proxy",
+          b: "It listens on 127.0.0.50:38412, a loopback alias. The direct links fade out. The gNB profiles (gnb-X-proxy.yaml) now list only this address under amfConfigs.",
+          pre: { mesh: "fade", proxy: true, cfg: "proxy", metrics: [{ l: "SCTP associations", v: "…" }] },
+          post: { mesh: "fade", proxy: true, cfg: "proxy", metrics: [{ l: "gNB-side associations", v: "0" }] } },
+        { t: "RAN side: one association per gNB",
+          b: "Each gNB keeps exactly one association, to the proxy. The proxy gives every gNB its own slot (A, B, C).",
+          pre: { gp: "on" }, post: { gp: "on", metrics: [{ l: "gNB-side associations", v: "3" }] } },
+        { t: "Core side: one association per gNB and AMF",
+          b: "For each gNB the proxy opens a separate association to every AMF, nine in total. Each AMF still sees three distinct gNBs, so NGAP identifiers stay unique per association.",
+          pre: { bp: "on" }, post: { bp: "on", metrics: [{ l: "gNB-side associations", v: "3" }, { l: "AMF-side associations", v: "9" }] } },
+        { t: "Transparent, not rewriting",
+          b: "The proxy does not rewrite NGAP IDs. It routes later messages with a table keyed by (gNB, RAN-UE-NGAP-ID), so two gNBs can use RAN-UE-NGAP-ID 1 at the same moment without a clash.",
+          pre: { pk: ["(gNB, RAN_ID) → AMF", "", ""] }, post: { pk: ["(gNB, RAN_ID) → AMF", "", ""] } }
+      ]
+    },
+    /* ===== 3 ===== */
+    {
+      tab: "NGSetup fan-out",
+      base: merge(P3, { metrics: [{ l: "gNB-side associations", v: "3" }, { l: "AMF-side associations", v: "9" }] }),
+      intro: ["Scene 3 · Attach", "What happens when a gNB starts",
+        "gNB-A boots. It sees one AMF, the proxy. The proxy sees three, and has to make three NGAP setups look like one."],
+      steps: [
+        { t: "gNB-A sends NGSetupRequest",
+          b: "NGAP procedureCode 21, sent to the only address gNB-A knows. Slots B and C stay idle. The proxy has already opened gNB-A's three backend associations.",
+          pre: { gpFocus: 0, bpFocus: 0, log: 4 },
+          fly: [F("gp0", "req", "NGSetupRequest", 1100)],
+          post: { gpFocus: 0, bpFocus: 0, log: 4, pk: ["setup_req saved", "", ""] } },
+        { t: "Fan-out to the pool",
+          b: "The proxy keeps a copy of the request (setup_req) for replay and sends one copy down each of gNB-A's three backend associations. The AMFs now wait on setup.",
+          pre: { amfState: ["WAIT_SETUP", "WAIT_SETUP", "WAIT_SETUP"] },
+          fly: [0, 1, 2].map(function (j) { return F("bp0" + j, "req", j === 0 ? "copy ×3" : "", 1000); }),
+          post: { amfState: ["WAIT_SETUP", "WAIT_SETUP", "WAIT_SETUP"] } },
+        { t: "Three responses, three data points",
+          b: "Every AMF accepts. Each NGSetupResponse also carries the AMF's relative capacity and served GUAMI: capacity 100, 100, 50 and pointers 0, 1, 2. The proxy turns these into selection weights and an S-TMSI affinity map.",
+          fly: [0, 1, 2].map(function (j) { return F("bp0" + j, "resp", j === 0 ? "NGSetupResponse" : "", 1000, j * 140, true); }),
+          post: { amfState: READY3, meta: "learned", pk: ["setup_req saved", "weights 100·100·50", "pointers 0·1·2"], log: 10 } },
+        { t: "The gNB gets exactly one answer",
+          b: "A gNB expects a single response. The first success is forwarded; the other two are swallowed. A failure is forwarded only if every AMF refuses. Swallowed messages are counted, so message accounting still balances.",
+          fly: [
+            F("gp0", "resp", "1st response", 1000, 0, true),
+            F("bp01", "sw", "", 1, 200, true, { hold: true, end: "swallow", swLabel: "✕ 2 swallowed" }),
+            F("bp02", "sw", "", 1, 200, true, { hold: true, end: "swallow" })
+          ],
+          post: { log: 12 } },
+        { t: "The proxy now owns the pool",
+          b: "gNB-A believes it talks to one AMF. The proxy holds three READY backends, their weights and pointers, and the saved setup_req. If an AMF dies and returns, the request is replayed on the new association and the duplicate response is swallowed the same way.",
+          pre: { gpFocus: null, bpFocus: null }, post: { gpFocus: null, bpFocus: null } }
+      ]
+    },
+    /* ===== 4 ===== */
+    {
+      tab: "Load balancing",
+      base: merge(P3, { meta: "cfg", amfState: READY3, pk: ["route table", "(empty)", ""], metrics: [{ l: "UEs routed", v: "0" }] }),
+      intro: ["Scene 4 · Attach UEs", "Who gets the next UE?",
+        "The gNBs now send every InitialUEMessage to the proxy. The proxy chooses the AMF, so the selection rule has to be explicit."],
+      steps: [
+        { t: "A new UE: weighted round-robin",
+          b: "The InitialUEMessage carries RAN-UE-NGAP-ID 1 and no 5G-S-TMSI. The proxy takes the next AMF from a smooth weighted round-robin and records (gNB-A, 1) → AMF-1.",
+          pre: { gpFocus: 0, bpFocus: 0 },
+          fly: [F("gp0", "req", "InitialUE · RAN_ID 1", 1000), F("bp00", "req", "", 800, 1050)],
+          post: { gpFocus: 0, bpFocus: 0, pk: ["(A,1) → AMF-1", "", ""], metrics: [{ l: "UEs routed", v: "1" }] } },
+        { t: "The same ID on three gNBs",
+          b: "gNB-B and gNB-C also use RAN-UE-NGAP-ID 1. The table key includes the gNB, so the three UEs reach AMF-1, AMF-2 and AMF-3 without colliding (as measured on the VM).",
+          pre: { gpFocus: null, bpFocus: null },
+          fly: [F("gp1", "req", "RAN_ID 1", 900), F("bp11", "req", "", 800, 950), F("gp2", "req", "RAN_ID 1", 900, 150), F("bp22", "req", "", 800, 1100)],
+          post: { pk: ["(A,1) → AMF-1", "(B,1) → AMF-2", "(C,1) → AMF-3"], metrics: [{ l: "UEs routed", v: "3" }] } },
+        { t: "Weights, not plain rotation",
+          b: "AMF-3 reports relative capacity 50, half of the others. Smooth weighted round-robin turns 100/100/50 into 40/40/20 % of new UEs. VM runs with 150, 300 and 600 UEs stayed within ±3 UEs of that split.",
+          fly: flood(mkUnits(10, 0), 260),
+          post: { bars: [{ p: 0.8, l: "40%" }, { p: 0.8, l: "40%" }, { p: 0.4, l: "20%" }], pk: ["weights 100·100·50", "→ 40 · 40 · 20 %", ""],
+                  metrics: [{ l: "share of new UEs", v: "40 · 40 · 20 %" }] } },
+        { t: "A returning UE goes home",
+          b: "If the InitialUEMessage carries a 5G-S-TMSI, the proxy matches its AMF set and pointer to the GUAMI each AMF reported at setup. The owner gets the UE directly, even when round-robin would pick another AMF.",
+          pre: { gpFocus: 0, bpFocus: 0 },
+          fly: [F("gp0", "req", "InitialUE · S-TMSI ptr=1", 1100), F("bp01", "req", "→ owner", 800, 1150)],
+          post: { gpFocus: 0, bpFocus: 0, pk: ["S-TMSI set=1 ptr=1", "→ owner AMF-2", "skips round-robin"],
+                  metrics: [{ l: "share of new UEs", v: "40 · 40 · 20 %" }, { l: "affinity decisions", v: "1" }] } },
+        { t: "Drain before maintenance",
+          b: "A drain command takes AMF-1 out of the selection: new UEs skip it, existing UEs are untouched. (A returning UE with an AMF-1 S-TMSI would still reach it; that rule is unit-tested.) On the VM both new UEs went elsewhere.",
+          pre: { gpFocus: null, bpFocus: null, amfMode: ["drain", "", ""], amfState: ["DRAINING", "READY", "READY"] },
+          fly: flood([{ i: 0, j: 1 }, { i: 1, j: 2 }, { i: 2, j: 1 }, { i: 0, j: 1 }, { i: 1, j: 2 }, { i: 2, j: 1 }], 280),
+          post: { amfMode: ["drain", "", ""], amfState: ["DRAINING", "READY", "READY"], pk: ["drain 1: AMF-1", "gets no new UEs", ""],
+                  metrics: [{ l: "new UEs on AMF-1", v: "0", tone: "ok" }] } }
+      ]
+    },
+    /* ===== 5 ===== */
+    {
+      tab: "AMF failure",
+      base: merge(P3, { meta: "cfg", amfState: READY3, gtag: [{ t: "UE-s3 on AMF-2", c: "ok" }, null, null], metrics: [{ l: "AMF-side associations", v: "9" }] }),
+      intro: ["Scene 5 · Failure", "An AMF dies with a UE on it",
+        "UE-s3 is registered on AMF-2. AMF-2 is killed with kill -9. Open5GS keeps no shared UE state, so that context is gone for good."],
+      steps: [
+        { t: "kill -9 on AMF-2",
+          b: "The proxy's backend associations to AMF-2 close. gNB-A notices nothing: its single association to the proxy is untouched.",
+          pre: { amfMode: ["", "down", ""], amfState: ["READY", "DOWN", "READY"] },
+          post: { amfMode: ["", "down", ""], amfState: ["READY", "DOWN", "READY"], metrics: [{ l: "AMF-side associations", v: "6", tone: "bad" }] } },
+        { t: "Detect, clean up, release",
+          b: "The proxy deactivates AMF-2, deletes the UEs it had routed there and sends UEContextReleaseCommand for exactly those UEs. (UERANSIM ignores NG Reset, so a per-UE release is used.) UEs on other AMFs are untouched.",
+          fly: [F("gp0", "bad", "UEContextRelease", 1100, 0, true), F("gp0", "resp", "Release Complete", 900, 1300, false)],
+          post: { gtag: [{ t: "UE-s3 released", c: "bad" }, null, null], pk: ["AMF-2 UEs dropped: 1", "release → gNB-A", ""] } },
+        { t: "AMF-2 comes back",
+          b: "The proxy retries with backoff, starting at 1 s. On reconnect it replays the saved NGSetupRequest; the response is swallowed because gNB-A already has one. AMF-2 is READY again.",
+          pre: { amfMode: ["", "", ""], amfState: ["READY", "WAIT_SETUP", "READY"] },
+          fly: [F("bp01", "req", "NGSetup (replay)", 1000), F("bp01", "sw", "", 1, 1100, true, { hold: true, end: "swallow", swLabel: "✕ swallowed" })],
+          post: { amfMode: ["", "", ""], amfState: READY3, pk: ["replay → AMF-2", "response swallowed", ""], metrics: [{ l: "AMF-side associations", v: "9" }] } },
+        { t: "The UE retries with its old GUTI",
+          b: "Its InitialUEMessage carries a 5G-S-TMSI owned by AMF-2, now READY, so affinity sends it there. AMF-2 restarted and holds no context, and releases the UE within 1 ms. The proxy notes it and treats this S-TMSI as stale for 60 s.",
+          pre: { gpFocus: 0, bpFocus: 0 },
+          fly: [F("gp0", "req", "InitialUE · S-TMSI", 900), F("bp01", "req", "", 600, 950), F("bp01", "bad", "Release (1 ms)", 600, 1600, true)],
+          post: { gpFocus: 0, bpFocus: 0, gtag: [{ t: "UE-s3: GUTI rejected", c: "bad" }, null, null], pk: ["AMF-2: no context", "S-TMSI stale 60 s", ""] } },
+        { t: "The second attempt succeeds",
+          b: "The UE registers from scratch. With the S-TMSI marked stale, selection falls back to weighted round-robin and AMF-3 accepts it. In the VM run the UE was registered about 0.24 s after the release.",
+          fly: [F("gp0", "req", "InitialUE · SUCI", 800), F("bp02", "req", "", 600, 850), F("bp02", "resp", "Accept", 600, 1500, true), F("gp0", "resp", "Accept", 700, 2150, true)],
+          post: { gtag: [{ t: "UE-s3 on AMF-3 ✓", c: "ok" }, null, null], pk: ["(A,4) → AMF-3", "weighted RR", ""],
+                  metrics: [{ l: "AMF-side associations", v: "9" }, { l: "release → registered", v: "≈ 0.24 s", tone: "ok" }] } }
+      ]
+    },
+    /* ===== 6 ===== */
+    {
+      tab: "Silent failures",
+      base: merge(P3, { meta: "cfg", amfState: READY3, metrics: [{ l: "AMF-side associations", v: "9" }] }),
+      intro: ["Scene 6 · Silent failures", "Failures that never close the socket",
+        "A crashed AMF closes its association and the proxy sees it at once. Two other failures leave the socket open and look healthy."],
+      steps: [
+        { t: "Black hole",
+          b: "A firewall rule drops every SCTP packet to AMF-2 (iptables DROP). Nothing closes; the packets just vanish.",
+          pre: { gpFocus: 0, bpFocus: 0, cut: ["bp01"] },
+          fly: [F("bp01", "hb", "heartbeat", 700, 0, false, { r: 4, end: "swallow", swLabel: "✕ no ack" }), F("bp01", "hb", "", 700, 800, false, { r: 4, end: "swallow" }), F("bp01", "hb", "", 700, 1600, false, { r: 4, end: "swallow" })],
+          post: { gpFocus: 0, bpFocus: 0, cut: ["bp01"], metrics: [{ l: "SCTP heartbeat", v: "1 s" }] } },
+        { t: "SCTP heartbeats give up",
+          b: "Every backend runs with a 1 s heartbeat and path_max_retrans 2. Unanswered heartbeats abort the association within seconds and the proxy deactivates AMF-2. VM result: PASS.",
+          pre: { amfMode: ["", "down", ""], amfState: ["READY", "DOWN", "READY"] },
+          post: { cut: [], amfMode: ["", "down", ""], amfState: ["READY", "DOWN", "READY"], metrics: [{ l: "AMF-side associations", v: "6", tone: "bad" }] } },
+        { t: "A frozen process (SIGSTOP)",
+          b: "The kernel, not the AMF process, answers SCTP heartbeats. A frozen AMF keeps its association and looks alive; a UE routed to it would simply hang. Without extra help the VM test stays XFAIL.",
+          pre: { amfMode: ["", "frozen", ""], amfState: ["READY", "FROZEN", "READY"], cut: [], metrics: [{ l: "AMF-side associations", v: "9" }] },
+          fly: [F("bp01", "hb", "heartbeat", 700, 0, false, { r: 4 }), F("bp01", "ok", "ack (kernel)", 700, 750, true, { r: 4 }),
+                F("bp01", "req", "InitialUE", 800, 1700, false, { end: "swallow", swLabel: "✕ never answered" })],
+          post: { amfMode: ["", "frozen", ""], amfState: ["READY", "FROZEN", "READY"], metrics: [{ l: "AMF-side associations", v: "9" }, { l: "frozen AMF detected", v: "no", tone: "bad" }] } },
+        { t: "An application-level probe",
+          b: "Optional probe: when a READY AMF has been silent for 1.5 s the proxy sends an empty RANConfigurationUpdate. Healthy AMFs answer with an Acknowledge, which the proxy swallows. No answer within 1.5 s deactivates the AMF. VM: PASS, and no false alarms in 15 s with all AMFs healthy.",
+          pre: { gpFocus: null, bpFocus: null },
+          fly: [F("bp00", "req", "probe", 700, 0, false, { r: 5 }), F("bp00", "resp", "", 600, 750, true, { r: 5, end: "swallow" }),
+                F("bp02", "req", "", 700, 0, false, { r: 5 }), F("bp02", "resp", "", 600, 750, true, { r: 5, end: "swallow" }),
+                F("bp01", "req", "", 700, 0, false, { r: 5, end: "swallow", swLabel: "✕ no Ack" })],
+          post: { amfMode: ["", "down", ""], amfState: ["READY", "DOWN", "READY"], metrics: [{ l: "AMF-side associations", v: "6", tone: "bad" }, { l: "frozen AMF detected", v: "yes", tone: "ok" }] } },
+        { t: "Reconnects cannot hang",
+          b: "Reconnecting to a frozen AMF succeeds at the SCTP level, but the NGSetup is never answered. A 5 s setup timeout drops the attempt and the proxy retries, so a frozen AMF never stays half-attached.",
+          pre: { amfMode: ["", "frozen", ""], amfState: ["READY", "WAIT_SETUP", "READY"] },
+          fly: [F("bp01", "req", "NGSetup (retry)", 800, 0, false, { end: "swallow", swLabel: "✕ 5 s timeout" })],
+          post: { amfMode: ["", "down", ""], amfState: ["READY", "DOWN", "READY"], metrics: [{ l: "NGSetup timeout", v: "5 s" }] } }
+      ]
+    },
+    /* ===== 7 ===== */
+    {
+      tab: "Load and accounting",
+      base: merge(P3, { meta: "cfg", amfState: READY3, scp: { f: 0, t: "SBI timeouts: 0" }, metrics: [{ l: "offered", v: "0/s" }] }),
+      intro: ["Scene 7 · Load", "What happens at 150, 300 and 400 registrations per second",
+        "A load generator plays three gNBs with identical RAN-UE-NGAP-IDs and sends InitialUEMessages with a fake NAS. The real 5GC does the authentication work."],
+      steps: [
+        { t: "150 per second: nothing is lost",
+          b: "Every one of 150 UEs gets an answer. p95 latency is 20 to 30 ms and the proxy uses about 0.01 of a core.",
+          fly: flood(mkUnits(12, 0), 150),
+          post: { scp: { f: 0, t: "SBI timeouts: 0" }, metrics: [{ l: "offered", v: "150/s" }, { l: "answered", v: "100%", tone: "ok" }, { l: "proxy CPU", v: "0.01 core" }] } },
+        { t: "250 to 350 per second: some UEs get no reply",
+          b: "Between 5 % and 42 % of UEs get no reply, varying from run to run. Each missing reply matches a 'Connection timer expired' in the SCP log. The proxy's CPU stays near zero.",
+          fly: flood(mkUnits(18, 4), 110, 3, "no reply"),
+          post: { scp: { f: 0.3, t: "SBI timeouts: 15–122" }, metrics: [{ l: "offered", v: "250–350/s" }, { l: "answered", v: "58–95%", tone: "bad" }, { l: "proxy CPU", v: "0.03 core" }] } },
+        { t: "The proxy loses nothing",
+          b: "Every message the proxy receives is counted as forwarded, swallowed or dropped. In every run the two sides were equal and drops were 0, so the missing replies were never produced upstream of the proxy.",
+          pre: { pk: ["in = out + swallowed", "+ dropped", "dropped = 0"] },
+          post: { pk: ["in = out + swallowed", "+ dropped", "dropped = 0"],
+                  metrics: [{ l: "received", v: "66" }, { l: "forwarded + swallowed + dropped", v: "66" }, { l: "dropped", v: "0", tone: "ok" }] } },
+        { t: "Control: remove the proxy",
+          b: "The same load straight to AMF-1 at 300 per second: 262 of 300 UEs were answered (87 %). Through the proxy the same rate gave 76 to 90 %. The loss is in the 5GC's shared SBI path, not in the proxy.",
+          pre: { mesh: "d1", proxyDim: true, gp: "fade", bp: "fade", pk: ["", "", ""] },
+          fly: flood(mkUnits(18, 7, true), 110, 6, "no reply"),
+          post: { mesh: "d1", proxyDim: true, gp: "fade", bp: "fade", pk: ["", "", ""], scp: { f: 0.13, t: "SBI timeouts: 18 (direct)" },
+                  metrics: [{ l: "via proxy", v: "76–90%" }, { l: "direct to AMF-1", v: "87%", tone: "bad" }] } },
+        { t: "Takeaway",
+          b: "A single-threaded epoll loop is enough: at these rates it stayed around 0.03 of a core with 1.7 MB RSS. In this lab, registration is lossless up to about 150 per second, and the limit lies behind the AMFs.",
+          pre: { mesh: "fade", proxyDim: false, gp: "on", bp: "on", pk: ["single thread", "1.7 MB RSS", "drops = 0"] },
+          post: { mesh: "fade", proxyDim: false, gp: "on", bp: "on", pk: ["single thread", "1.7 MB RSS", "drops = 0"], scp: { f: 0.3, t: "limit: behind the AMFs" },
+                  metrics: [{ l: "proxy CPU", v: "≤ 0.03 core" }, { l: "RSS", v: "1.7 MB" }, { l: "lossless up to", v: "≈ 150/s", tone: "ok" }] } }
+      ]
+    }
+  ];
+
+  function stateAt(s, k) {
+    var o = merge(DEF, SC[s].base), n, st;
+    for (n = 0; n <= k; n++) { st = SC[s].steps[n]; o = merge(merge(o, st.pre || {}), st.post || {}); }
+    return o;
+  }
+
+  /* ---------- drawing ---------- */
+  var S = stateAt(0, -1), lastMetrics = "";
+  function setLink(el, mode, down) {
+    var c = el.getAttribute("class").replace(/\b(on|fade|dim|down)\b/g, "").replace(/\s+/g, " ").trim();
+    if (mode === "on" || mode === "dim" || mode === "fade") c += " " + mode;
+    if (down) c = c.replace(/\bon\b/, "").trim() + " down";
+    el.setAttribute("class", c);
+  }
+  var GT_FILL = { bad: "var(--bad)", ok: "var(--ok)", req: "var(--req)" };
+  function draw(st, instant) {
+    if (instant) svg.classList.add("instant");
+    for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) {
+      var m = st.mesh === "off" ? "off" : st.mesh === "fade" ? "fade" : (st.mesh === "d1" ? (j === 0 ? "on" : "fade") : "on");
+      setLink(mesh[i][j], m, m === "on" && st.mesh === "on" && st.amfMode[j] === "down");
+    }
+    for (i = 0; i < 3; i++) {
+      var g = st.gp === "off" ? "off" : st.gp === "fade" ? "fade" : (st.gpFocus !== null && st.gpFocus !== i ? "dim" : "on");
+      setLink(gp[i], g, false);
+      for (j = 0; j < 3; j++) {
+        var b = st.bp === "off" ? "off" : st.bp === "fade" ? "fade" : (st.bpFocus !== null && st.bpFocus !== i ? "dim" : "on");
+        setLink(bp[i][j], b, b === "on" && st.amfMode[j] === "down");
+      }
+    }
+    gProxy.style.opacity = st.proxy ? (st.proxyDim ? 0.3 : 1) : 0;
+    gnbEl.forEach(function (g, k) {
+      g.c.textContent = st.cfg === "direct" ? "amfConfigs: .5 .105 .205" : "amfConfigs: 127.0.0.50";
+      var tg = st.gtag[k];
+      g.gt.textContent = tg ? tg.t : "";
+      g.gt.style.fill = tg ? (GT_FILL[tg.c] || "var(--muted)") : "";
+      g.gt.style.opacity = tg ? 1 : 0;
+    });
+    amfEl.forEach(function (a, k) {
+      var md = st.amfMode[k];
+      a.g.setAttribute("class", "node amf" + (md ? " " + md : ""));
+      a.meta.style.opacity = (st.meta === "cfg" || st.meta === "learned") ? 1 : 0;
+      a.st.textContent = st.amfState[k];
+      var s2 = st.amfState[k];
+      a.st.style.fill = s2 === "READY" ? "var(--ok)" : s2 === "DOWN" ? "var(--bad)" : s2 === "FROZEN" ? "var(--proxy)" : "var(--req)";
+      if (st.bars) {
+        a.bar.style.opacity = 1; a.fill.setAttribute("width", Math.round((st.bars[k].p) * (BW - 40))); a.bt.textContent = st.bars[k].l;
+      } else { a.bar.style.opacity = 0; a.fill.setAttribute("width", 0); }
+    });
+    pk.forEach(function (t, k) { t.textContent = st.pk[k] || ""; t.style.opacity = st.pk[k] ? 1 : 0; });
+    if (st.scp) { scpG.style.opacity = 1; scpFill.setAttribute("width", Math.round(st.scp.f * 416)); scpTx.textContent = st.scp.t; }
+    else { scpG.style.opacity = 0; scpFill.setAttribute("width", 0); }
+    gMarks.textContent = "";
+    st.cut.forEach(function (id) {
+      var p = $(id), pt2 = p.getPointAtLength(p.getTotalLength() * 0.62);
+      var mg = mk("g", { class: "mark", transform: "translate(" + pt2.x + "," + pt2.y + ")" }, gMarks);
+      mk("circle", { r: 11 }, mg); mk("line", { x1: -5, y1: -5, x2: 5, y2: 5 }, mg); mk("line", { x1: -5, y1: 5, x2: 5, y2: -5 }, mg);
+    });
+    drawMetrics(st.metrics);
+    drawEvidence(st);
+    if (instant) { void svg.getBoundingClientRect(); requestAnimationFrame(function () { svg.classList.remove("instant"); }); }
+  }
+  function drawMetrics(ms) {
+    var key = JSON.stringify(ms);
+    if (key === lastMetrics) return;
+    var prev = {};
+    try { JSON.parse(lastMetrics || "[]").forEach(function (m) { prev[m.l] = m.v; }); } catch (e) {}
+    lastMetrics = key;
+    var box = $("metrics");
+    box.textContent = "";
+    ms.forEach(function (m) {
+      var d = document.createElement("div"); d.className = "metric " + (m.tone || "");
+      var v = document.createElement("span"); v.className = "v" + (prev[m.l] !== undefined && prev[m.l] !== m.v && !RM ? " pop" : ""); v.textContent = m.v;
+      var l = document.createElement("span"); l.className = "l"; l.textContent = m.l;
+      d.appendChild(v); d.appendChild(l); box.appendChild(d);
+    });
+  }
+
+  /* ---------- evidence ---------- */
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  function cap(t) { return '<p class="ev-label">' + esc(t) + "</p>"; }
+  function note(t) { return '<p class="note">' + esc(t) + "</p>"; }
+  function pre(lines, newCount) {
+    var n = lines.length;
+    return "<pre>" + lines.map(function (l, k) {
+      var line = typeof l === "string" ? esc(l) : '<span class="' + l[0] + '">' + esc(l[1]) + "</span>";
+      return (newCount && k >= n - newCount) ? '<span class="new">' + line + "</span>" : line;
+    }).join("\n") + "</pre>";
+  }
+  var LOG3 = [
+    ["", "[PROXY] New gNB (FD=5): connecting to AMF pool…"], ["", "  → AMF-1 (127.0.0.5) CONNECTED"],
+    ["", "  → AMF-2 (127.0.0.105) CONNECTED"], ["", "  → AMF-3 (127.0.0.205) CONNECTED"],
+    ["ha", "[HA] AMF-1 capacity=100 GUAMI=1 (first: set=1 ptr=0)"], ["ha", "[HA] AMF-1 NGSetup OK: in pool (READY)"],
+    ["ha", "[HA] AMF-2 capacity=100 GUAMI=1 (first: set=1 ptr=1)"], ["ha", "[HA] AMF-2 NGSetup OK: in pool (READY)"],
+    ["ha", "[HA] AMF-3 capacity=50 GUAMI=1 (first: set=1 ptr=2)"], ["ha", "[HA] AMF-3 NGSetup OK: in pool (READY)"],
+    ["sw", "  → AMF-2 reply (proc=21) already forwarded: swallowed"], ["sw", "  → AMF-3 reply (proc=21) already forwarded: swallowed"]
+  ];
+  var CFG_DIRECT = "amfConfigs:\n  - address: 127.0.0.5\n  - address: 127.0.0.105\n  - address: 127.0.0.205";
+  function evidenceHTML(st) {
+    var s = sceneIdx, k = idx, h = "<h3>Evidence</h3>";
+    if (s === 0) {
+      return h + cap("gnb-a.yaml: every gNB carries the whole pool") + "<pre>" + CFG_DIRECT.replace(/(127\.0\.0\.\d+)/g, '<span class="hl">$1</span>') + "\n  (each with port: 38412)</pre>" +
+        cap("BASELINE.md: kill -9 on AMF-2") + "<pre>ss -Sn   →  9 associations\nafter kill →  <span class=\"hl\">6</span> associations</pre>";
+    }
+    if (s === 1) {
+      h += cap("gnb-a-proxy.yaml: the whole pool is now one address") + '<pre>amfConfigs:\n  - address: <span class="hl">127.0.0.50</span>\n    port: 38412</pre>';
+      if (k >= 3) h += cap("proxy log: three gNBs, same RAN_ID=1 (VM run)") + pre([
+        "[LB] NEW UE (GNB_FD=6  RAN_ID=1) -> AMF-1", "[LB] NEW UE (GNB_FD=10 RAN_ID=1) -> AMF-2", "[LB] NEW UE (GNB_FD=14 RAN_ID=1) -> AMF-3"], 3) +
+        note("Keyed by gNB as well as RAN_ID these never collide. An earlier version keyed on RAN_ID alone.");
+      else h += note("A gNB profile no longer needs to know the pool: adding or removing an AMF becomes a proxy-side change.");
+      return h;
+    }
+    if (s === 2) {
+      return h + cap("proxy_master.log (excerpt)") + (st.log ? pre(LOG3.slice(0, st.log), st.log >= 12 ? 2 : (st.log >= 10 ? 6 : 4)) : '<p class="empty">Waiting for gNB-A.</p>') +
+        note("Every received message is forwarded, swallowed or counted as dropped. Drops for this exchange: 0.");
+    }
+    if (s === 3) {
+      if (k < 0) return h + cap("Selection rules, in order") + pre(["1. 5G-S-TMSI present and owner AMF READY → owner", "2. else smooth weighted RR over READY, non-draining AMFs", "3. all draining → still pick a READY AMF"]);
+      if (k === 0) return h + cap("proxy log (VM)") + pre(["[LB] NEW UE (GNB_FD=6 RAN_ID=1) -> AMF-1 chosen (weighted RR)"], 1);
+      if (k === 1) return h + cap("proxy log (VM)") + pre(["[LB] NEW UE (GNB_FD=6  RAN_ID=1) -> AMF-1 chosen (weighted RR)", "[LB] NEW UE (GNB_FD=10 RAN_ID=1) -> AMF-2 chosen (weighted RR)", "[LB] NEW UE (GNB_FD=14 RAN_ID=1) -> AMF-3 chosen (weighted RR)"], 2);
+      if (k === 2) return h + cap("Measured") + pre(["unit test: 250 picks → 100 / 100 / 50", "VM: 150, 300, 600 UEs → within ±3 of 40/40/20 %"]) + note("The VM check is part of the load scenarios; the split holds regardless of which gNB sends the UE.");
+      if (k === 3) return h + cap("proxy log (VM, after an AMF-2 restart)") + pre(["[LB] NEW UE (GNB_FD=5 RAN_ID=3) -> AMF-2 chosen (S-TMSI affinity set=1 ptr=1)"], 1) + note("The GUAMI list in the NGSetupResponse tells the proxy which pointer each AMF owns.");
+      return h + cap("proxy control file, VM") + pre(["[CTL] AMF-1 set to drain (accepts no new UEs)", "[CTL]   AMF-1 127.0.0.5:38412 state=READY capacity=100 drain=yes", "[CTL]   AMF-2 127.0.0.105:38412 state=READY capacity=100 drain=no", "[CTL]   AMF-3 127.0.0.205:38412 state=READY capacity=50 drain=no"], 1);
+    }
+    if (s === 4) {
+      if (k < 0) return h + cap("Why release instead of reset") + pre(["UERANSIM ignores NG Reset;", "it does handle UEContextReleaseCommand,", "and its UE then registers again."]);
+      if (k === 0) return h + cap("proxy log (VM)") + pre([["bad", "[ALARM] AMF connection lost! (FD=7) reason=close"]], 1) + note("Detected at the moment of the kill; no timer involved.");
+      if (k === 1) return h + cap("proxy log (VM)") + pre([["bad", "[ALARM] AMF connection lost! (FD=7) reason=close"], ["ha", "[HA] AMF-2 deactivated. (affected UE=1, retry in 1000 ms)"], ["ha", "[HA] gNB (FD=5): UEContextReleaseCommand sent for 1 UE"], ["ha", "[HA] UE of the lost AMF (RAN_ID=2) release completed"]], 3);
+      if (k === 2) return h + cap("proxy log (VM)") + pre([["ha", "[HA] AMF-2 capacity=100 GUAMI=1 (first: set=1 ptr=1)"], ["ha", "[HA] AMF-2 NGSetup OK: in pool (READY)"], ["sw", "  → AMF-2 reply (proc=21) already forwarded: swallowed"]], 3) + note("About 3 s after the kill in this run (systemd restart plus the proxy's 1 s backoff).");
+      if (k === 3) return h + cap("proxy log (VM)") + pre(["[LB] NEW UE (GNB_FD=5 RAN_ID=3) -> AMF-2 chosen (S-TMSI affinity set=1 ptr=1)", ["bad", "[LB] AMF-2: no context for S-TMSI 0xc000039f (immediate release): weighted RR instead of affinity for 60000 ms"]], 2);
+      return h + cap("proxy log (VM)") + pre(["[LB] AMF-2: no context for S-TMSI 0xc000039f (immediate release): weighted RR instead of affinity for 60000 ms", "[LB] NEW UE (GNB_FD=5 RAN_ID=4) -> AMF-3 chosen (weighted RR)"], 1) +
+        cap("UE-s3 log (VM)") + pre(["21:34:15.473 MM-DEREGISTERED, Sending Initial Registration", ["ha", "21:34:15.714 Registration accept received"]], 1);
+    }
+    if (s === 5) {
+      var rows = pre([["ha", "blackhole        PASS  (heartbeat)"], ["ha", "stop / kill9      PASS"], ["bad", "sigstop          XFAIL (no probe)"], ["ha", "sigstop + probe  PASS"]]);
+      if (k < 0) return h + cap("VM results, fault injection") + rows;
+      if (k <= 1) return h + cap("Transport settings on every backend") + pre(["SCTP heartbeat      1 s", "path_max_retrans    2", "assoc_max_retrans   3", "RTO                 100 to 1000 ms"]) + cap("VM") + pre([["ha", "blackhole: AMF-2 detected, UE-s3 registered elsewhere"]]);
+      if (k === 2) return h + cap("VM") + pre([["bad", "sigstop: no [HA] deactivation, UE-s3 PDU session fails"]]) + note("The kernel answers heartbeats on behalf of the stopped process.");
+      if (k === 3) return h + cap("proxy log (VM, probe enabled)") + pre([["bad", "[ALARM] AMF connection lost! (FD=7) reason=probe timeout"], ["ha", "[HA] AMF-2 deactivated. (affected UE=0, retry in 1000 ms)"]], 2) + note("Probe is opt-in (probe_healthy first: 15 s, no false alarms).");
+      return h + cap("proxy log (VM)") + pre(["  → AMF-2 (127.0.0.105) CONNECTED", ["bad", "[ALARM] ... reason=NGSetup timeout"], "  → AMF-2 (127.0.0.105) CONNECTED", ["bad", "[ALARM] ... reason=NGSetup timeout"]], 4) + note("Timeouts arrive 5 s apart until the AMF is released.");
+    }
+    var sweep = pre(["rate/s  run 1   run 2   SCP timeouts", "150     100%    100%    0", "250      80%     95%    60 / 15", "300      76%     90%    72 / 30", "350      58%     76%    122 / 69"]);
+    if (k < 0) return h + cap("Lab constraint") + pre(["4 vCPU VM; gNBs, UEs, proxy, AMFs and the", "whole 5GC share the same host."]);
+    if (k === 0) return h + cap("VM, 3 gNBs × 50 UEs") + pre(["150 sent / 150 answered", "latency p95 30 ms, max 31 ms", "proxy: 0.007 core, RSS 1.7 MB"]);
+    if (k === 1) return h + cap("VM sweep (two runs)") + sweep;
+    if (k === 2) return h + cap("Message accounting (daily-ops run: 3 gNBs, 4 UEs)") + pre(["rx  = gnb→proxy + amf→proxy", "      + multicast extra + injected", "out = proxy→gnb + proxy→amf", "      + swallowed + dropped", "66 == 66", "load_big: 603 / 603 received, drops 0"]) +
+      note("injected: replayed setups, probes and releases the proxy creates itself.");
+    if (k === 3) return h + cap("Control, same total rate (300/s)") + pre(["via proxy       76% / 90%", "direct, AMF-1   87%  (262 / 300)", "SCP timeouts    18 (direct)"]);
+    return h + cap("VM sweep (two runs)") + sweep + note("Single run to run variation is about ±15 points; the knee lies between 150 and 250 per second.");
+  }
+  var lastEv = "";
+  function drawEvidence(st) {
+    var key = sceneIdx + ":" + idx + ":" + st.log;
+    if (key === lastEv) return; lastEv = key;
+    $("evidence").innerHTML = evidenceHTML(st);
+    fitEvidence();
+  }
+  /* no scrollbars: shrink the evidence text until it fits the side column */
+  function fitEvidence() {
+    var ev = $("evidence"), sizes = [11.5, 10.5, 9.8, 9.2, 8.6];
+    if (window.innerWidth <= 980) { ev.style.removeProperty("--evfs"); return; }
+    for (var n = 0; n < sizes.length; n++) {
+      ev.style.setProperty("--evfs", sizes[n] + "px");
+      if (ev.scrollHeight <= ev.clientHeight + 1) return;
+    }
+  }
+  window.addEventListener("resize", function () { fitEvidence(); });
+
+  /* ---------- clock, jobs, packets ---------- */
+  var vt = 0, last = performance.now(), frozen = false, speed = 1, jobs = [];
+  function clearJobs() { jobs = []; gPkts.textContent = ""; }
+  function frame(now) {
+    var dt = now - last; last = now;
+    if (!frozen && dt < 200) vt += dt * speed;
+    for (var n = jobs.length - 1; n >= 0; n--) { if (jobs[n].tick()) jobs.splice(n, 1); }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  function wait(ms) { return new Promise(function (res) { var end = vt + (RM ? 1 : ms); jobs.push({ tick: function () { if (vt >= end) { res(); return true; } return false; } }); }); }
+  function ease(p) { return p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2; }
+  function fly(f) {
+    return new Promise(function (res) {
+      var path = $(f.path), L = path.getTotalLength();
+      var g = mk("g", { class: "pkt " + f.cls }, gPkts);
+      mk("circle", { r: f.r || (f.cls === "hb" ? 4 : 7) }, g);
+      var tx = mk("text", { x: 12, y: -10 }, g); tx.textContent = f.label || "";
+      g.style.opacity = 0;
+      var start = vt + (RM ? 0 : (f.delay || 0)), dur = RM ? 1 : (f.dur || 900), phase = 0, end2 = 0;
+      jobs.push({ tick: function () {
+        if (vt < start) return false;
+        var p = Math.min(1, (vt - start) / dur), s = f.hold ? (f.rev ? 0 : 1) : (f.rev ? 1 - ease(p) : ease(p));
+        var pt = path.getPointAtLength(s * L);
+        g.setAttribute("transform", "translate(" + pt.x + "," + pt.y + ")");
+        g.style.opacity = 1;
+        if (p < 1) return false;
+        if (f.end === "swallow") {
+          if (!phase) { phase = 1; end2 = vt + 700; tx.textContent = f.swLabel || ""; tx.setAttribute("x", f.rev ? 14 : -14); tx.setAttribute("y", 22); if (!f.rev) tx.setAttribute("text-anchor", "end"); }
+          var q = Math.min(1, (end2 - vt) / 700); g.style.opacity = Math.max(0, q);
+          if (q > 0) return false;
+        }
+        g.remove(); res(); return true;
+      } });
+    });
+  }
+
+  /* ---------- controller ---------- */
+  var sceneIdx = 0, idx = -1, playing = false, loop = 0;
+  function stepCount() { return SC[sceneIdx].steps.length; }
+  function renderText(animate) {
+    var s = SC[sceneIdx], t, b, n;
+    if (idx < 0) { n = s.intro[0]; t = s.intro[1]; b = s.intro[2]; }
+    else { n = "Scene " + (sceneIdx + 1) + " · step " + (idx + 1) + " of " + stepCount(); t = s.steps[idx].t; b = s.steps[idx].b; }
+    $("stepN").textContent = n; $("stepTitle").textContent = t; $("stepBody").textContent = b;
+    if (animate && !RM) { var el = $("stepText"); el.classList.remove("swap"); void el.offsetWidth; el.classList.add("swap"); }
+    var dots = $("dots"); dots.textContent = "";
+    for (var k = -1; k < stepCount(); k++) {
+      (function (k) {
+        var d = document.createElement("button"); d.className = "dot" + (k < idx ? " done" : "");
+        d.setAttribute("aria-label", k < 0 ? "Scene introduction" : "Step " + (k + 1));
+        if (k === idx) d.setAttribute("aria-current", "true");
+        d.addEventListener("click", function () { cancelAuto(); show(sceneIdx, k); });
+        dots.appendChild(d);
+      })(k);
+    }
+    var tabs = $("tabs").children;
+    for (var q = 0; q < tabs.length; q++) { if (q === sceneIdx) tabs[q].setAttribute("aria-current", "true"); else tabs[q].removeAttribute("aria-current"); }
+    $("bPrev").disabled = (sceneIdx === 0 && idx < 0);
+    $("bNext").disabled = (sceneIdx === SC.length - 1 && idx >= stepCount() - 1);
+    updatePlay();
+  }
+  function updatePlay() {
+    var b = $("bPlay"), atEnd = sceneIdx === SC.length - 1 && idx >= stepCount() - 1;
+    var label = playing && !frozen ? "Pause" : (playing && frozen ? "Resume" : (atEnd ? "Replay" : "Play"));
+    b.textContent = label; b.setAttribute("aria-label", label);
+  }
+  function show(s, k) {
+    loop++; playing = false; frozen = false; clearJobs();
+    sceneIdx = s; idx = k; S = stateAt(s, k); lastEv = ""; draw(S, true); renderText(true);
+  }
+  function advance() {
+    var s = SC[sceneIdx];
+    if (idx + 1 >= s.steps.length) return Promise.resolve(false);
+    clearJobs(); idx++;
+    var st = s.steps[idx];
+    renderText(true);
+    S = merge(S, st.pre || {}); draw(S, false);
+    return Promise.all((st.fly || []).map(fly)).then(function () {
+      S = stateAt(sceneIdx, idx); draw(S, false); return true;
+    });
+  }
+  function cancelAuto() { loop++; playing = false; frozen = false; updatePlay(); }
+  function holdFor() {
+    var st = SC[sceneIdx].steps[idx], words = st ? st.b.split(/\s+/).length : 20;
+    return Math.min(9000, 1500 + words * 170);
+  }
+  function manualNext() {
+    cancelAuto(); clearJobs();
+    if (idx + 1 < stepCount()) { advance(); }
+    else if (sceneIdx + 1 < SC.length) { show(sceneIdx + 1, -1); }
+    updatePlay();
+  }
+  function manualPrev() {
+    cancelAuto();
+    if (idx >= 0) show(sceneIdx, idx - 1);
+    else if (sceneIdx > 0) show(sceneIdx - 1, SC[sceneIdx - 1].steps.length - 1);
+  }
+  function startAuto() {
+    if (sceneIdx === SC.length - 1 && idx >= stepCount() - 1) show(sceneIdx, -1);
+    var me = ++loop; playing = true; frozen = false;
+    updatePlay();
+    (function run() {
+      if (me !== loop) return;
+      if (idx + 1 < stepCount()) {
+        advance().then(function () { return wait(holdFor()); }).then(function () { if (me === loop) run(); });
+      } else if (sceneIdx + 1 < SC.length) {
+        wait(2200).then(function () {
+          if (me !== loop) return;
+          sceneIdx++; idx = -1; S = stateAt(sceneIdx, -1); lastEv = ""; clearJobs(); draw(S, true); renderText(true);
+          return wait(2400);
+        }).then(function () { if (me === loop) run(); });
+      } else { playing = false; updatePlay(); }
+    })();
+  }
+
+  /* ---------- wiring ---------- */
+  SC.forEach(function (s, k) {
+    var b = document.createElement("button"); b.className = "tab";
+    b.innerHTML = "<b>" + (k + 1) + "</b><span>" + s.tab + "</span>";
+    b.addEventListener("click", function () { cancelAuto(); show(k, -1); try { history.replaceState(null, "", "#s" + (k + 1)); } catch (e) {} });
+    $("tabs").appendChild(b);
+  });
+  $("bNext").addEventListener("click", manualNext);
+  $("bPrev").addEventListener("click", manualPrev);
+  $("bRestart").addEventListener("click", function () { cancelAuto(); show(sceneIdx, -1); });
+  $("bPlay").addEventListener("click", function () {
+    if (playing && !frozen) { frozen = true; updatePlay(); }
+    else if (playing && frozen) { frozen = false; updatePlay(); }
+    else startAuto();
+  });
+  $("speed").addEventListener("change", function (e) { speed = parseFloat(e.target.value) || 1; });
+  document.addEventListener("keydown", function (e) {
+    if (e.target && /^(SELECT|INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+    if (e.key === "ArrowRight") { manualNext(); e.preventDefault(); }
+    else if (e.key === "ArrowLeft") { manualPrev(); e.preventDefault(); }
+    else if (e.key === " " && !(e.target && e.target.tagName === "BUTTON")) { $("bPlay").click(); e.preventDefault(); }
+  });
+
+  var hm = (location.hash || "").match(/^#s([1-7])$/);
+  show(hm ? parseInt(hm[1], 10) - 1 : 0, -1);
+})();
+</script>

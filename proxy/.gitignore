@@ -1,0 +1,5 @@
+n2proxy_master
+tests/core_test
+tests/n2proxy_tcp
+__pycache__/
+*.pyc
