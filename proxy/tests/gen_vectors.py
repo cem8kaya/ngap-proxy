@@ -23,7 +23,7 @@ ies = [ie(85, 'reject', 'RAN-UE-NGAP-ID', 7), ie(38, 'reject', 'NAS-PDU', NAS),
        ie(26, 'reject', 'FiveG-S-TMSI', {'aMFSetID': (1, 10), 'aMFPointer': (2, 6), 'fiveG-TMSI': b'\xde\xad\xbe\xef'}),
        ie(90, 'ignore', 'RRCEstablishmentCause', 'mo-Signalling')]
 V["initial_ue_stmsi"] = (enc('initiatingMessage', 15, 'ignore', 'InitialUEMessage', ies), 15, 7, (1, 2))
-for n, (a, r) in [("ul_small", (1, 1)), ("ul_big", (70000, 300)), ("ul_zero", (0, 0))]:
+for n, (a, r) in [("ul_small", (1, 1)), ("ul_big", (70000, 300)), ("ul_zero", (0, 0)), ("ul_amf_max", (2**40 - 1, 5))]:
     ies = [ie(10, 'reject', 'AMF-UE-NGAP-ID', a), ie(85, 'reject', 'RAN-UE-NGAP-ID', r),
            ie(38, 'reject', 'NAS-PDU', NAS), ie(121, 'reject', 'UserLocationInformation', ULI)]
     V["uplink_nas_" + n] = (enc('initiatingMessage', 46, 'ignore', 'UplinkNASTransport', ies), 46, r, a)
@@ -58,6 +58,33 @@ SETUPS = [(100, [(2, 1, 0)]), (50, [(2, 1, 2)]), (0, [(2, 1, 63)]), (255, [(2, 1
 P.set_val(('initiatingMessage', {'procedureCode': 35, 'criticality': 'reject', 'value': ('RANConfigurationUpdate', {'protocolIEs': []})}))
 PROBE = P.to_aper()
 
+def patch_ie(pdu, old, new):
+    """Replace one IE (header+value bytes) inside a short-form-length PDU and fix the outer length determinant."""
+    i = pdu.index(bytes(old))
+    body = bytes(pdu[:i]) + bytes(new) + bytes(pdu[i + len(old):])
+    hdr, vlen_size = body[:3], 1 if body[3] < 0x80 else 2
+    # the payload is everything after the old length determinant
+    payload = body[3 + vlen_size:]
+    n = len(payload)
+    det = bytes([n]) if n < 0x80 else bytes([0x80 | (n >> 8), n & 0xFF])
+    return hdr + det + payload
+
+def uint_ie(ie_id, k, fill, len_bits):
+    """IE with an INTEGER whose length header claims k value bytes (all set to `fill`)."""
+    val = bytes([(k - 1) << (8 - len_bits)]) + bytes([fill]) * k
+    return bytes([ie_id >> 8, ie_id & 0xFF, 0x00, len(val)]) + val
+
+UL = V["uplink_nas_ul_small"][0]
+OLD_AMF = bytes([0x00, 0x0A, 0x00, 0x02, 0x00, 0x01])              # AMF-UE-NGAP-ID = 1
+BAD = {
+    "amf_id_6_bytes": (patch_ie(UL, OLD_AMF, uint_ie(10, 6, 0xFF, 3)), 1, -1),   # > 2^40-1 range
+    "amf_id_8_bytes": (patch_ie(UL, OLD_AMF, uint_ie(10, 8, 0x80, 3)), 1, -1),   # wrapped to a negative int64 before the fix
+}
+REL = release_cmd(1, 1)
+OLD_PAIR = bytes([0x00, 0x72, 0x00, 0x04, 0x00, 0x01, 0x00, 0x01])   # UE-NGAP-ID-pair (1,1)
+big_pair = bytes([0x0E]) + b"\x80" * 8 + bytes([0x00, 0x01])         # AMF id claims 8 bytes
+BAD["pair_amf_8_bytes"] = (patch_ie(REL, OLD_PAIR, bytes([0x00, 0x72, 0x00, len(big_pair)]) + big_pair), -1, -1)
+
 def c(b): return "{" + ",".join("0x%02x" % x for x in b) + "}"
 with open("vectors.h", "w") as f:
     f.write("// otomatik üretildi: gen_vectors.py (pycrate)\n#pragma once\n#include <cstdint>\n#include <vector>\n#include <string>\n")
@@ -84,4 +111,9 @@ with open("vectors.h", "a") as f:
     for cap, gs in SETUPS:
         f.write("  {%d, {%s}, %s},\n" % (cap, ",".join("{%d,%d,%d}" % g for g in gs), c(setup_resp(cap, gs))))
     f.write("};\nstatic const std::vector<uint8_t> PROBE_REF = %s;\n" % c(PROBE))
+with open("vectors.h", "a") as f:
+    f.write("struct BadVec { const char* name; std::vector<uint8_t> pdu; int64_t ran; int64_t amf; };\nstatic const std::vector<BadVec> BAD_VECS = {\n")
+    for k, (b, ran, amf) in BAD.items():
+        f.write('  {"%s", %s, %d, %d},\n' % (k, c(b), ran, amf))
+    f.write("};\n")
 print({k: v[0].hex() for k, v in V.items()}); print("reset", RESET.hex())

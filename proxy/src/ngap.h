@@ -36,10 +36,11 @@ inline size_t read_len(const uint8_t* p, size_t n, size_t& out) {
 }
 
 // INTEGER değeri: ilk bayt uzunluk başlığı. len_bits=2 (0..2^32-1, RAN id) veya 3 (0..2^40-1, AMF id).
+// k, spec aralığının (RAN: 4 bayt, AMF: 5 bayt) üstündeyse reddedilir; aksi halde x int64'te negatife taşar ve "yok" (-1) ile karışır.
 inline bool read_uint(const uint8_t* v, size_t n, int len_bits, int64_t& out) {
     if (n < 2) return false;
     size_t k = (v[0] >> (8 - len_bits)) + 1;
-    if (n != k + 1) return false;
+    if (k > (len_bits == 2 ? 4u : 5u) || n != k + 1) return false;
     int64_t x = 0;
     for (size_t i = 0; i < k; i++) x = (x << 8) | v[1 + i];
     out = x;
@@ -75,7 +76,7 @@ inline Info peek(const uint8_t* b, size_t n) {
         }
         else if (id == IE_UE_NGAP_IDS && l >= 4 && (v[0] & 0xF0) == 0) {   // UEContextReleaseCommand: uE-NGAP-ID-pair
             size_t n = ((v[0] >> 1) & 7) + 1;
-            if (l >= 1 + n + 2) {
+            if (n <= 5 && l >= 1 + n + 2) {                      // AMF id en fazla 5 bayt (2^40-1)
                 int64_t a = 0; for (size_t k = 0; k < n; k++) a = (a << 8) | v[1 + k];
                 size_t m = (v[1 + n] >> 6) + 1;
                 if (l == 1 + n + 1 + m) { int64_t x = 0; for (size_t k = 0; k < m; k++) x = (x << 8) | v[2 + n + k]; r.amf = a; r.ran = x; }
