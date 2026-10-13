@@ -14,7 +14,7 @@ Open5GS + UERANSIM lab VM'inde geliştirilen **N2 (NGAP/SCTP) şeffaf yük denge
 | **D** | Prometheus metrikleri (`:9190`), bağlantı/NGSetup zaman aşımı, sentetik yük üreteci `load_gen.py` | VM: ≤150 kayıt/sn kayıpsız (p95 20–30 ms); 250–350/sn'de %20–42 UE yanıtsız ama proxy mesajları eksiksiz iletiyor (korunum, ~%1 CPU) — kayıp 5GC SBI hattında (SCP `Connection timer expired` sayısı = yanıtsız sayısı) |
 | **E** | Daily-ops notebook'u master proxy'ye bağlandı; dokümanlar/topoloji gerçeğe hizalandı; bayat generator'lar kaldırıldı; SSH anahtarı desteği | — |
 
-Test piramidi: `make -C proxy test` (111 birim + 79 mantık kontrolü, pycrate APER vektörleri, sahte AMF/gNB, TCP taşıma) → VM'de `chaos_suite` (gerçek SCTP/Open5GS/UERANSIM).
+Test piramidi: `make -C proxy test` (125 birim + 79 mantık kontrolü, pycrate APER vektörleri, sahte AMF/gNB, TCP taşıma) → VM'de `chaos_suite` (gerçek SCTP/Open5GS/UERANSIM).
 
 ## Bilinen sınırlar / sonraki adaylar
 - **C3 slice farkındalığı ertelendi:** Requested NSSAI şifreli NAS içinde; InitialUEMessage yalnızca yeniden kayıtta AllowedNSSAI taşır.

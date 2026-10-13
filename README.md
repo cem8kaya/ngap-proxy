@@ -81,7 +81,7 @@ Point each gNB's `amfConfigs` at the `N2P_LISTEN` address.
 
 I test in three layers:
 
-1. Unit tests (`make -C proxy test`): 111 checks on pycrate APER vectors, under ASan and UBSan.
+1. Unit tests (`make -C proxy test`): 125 checks on pycrate APER vectors, including malformed integer lengths, under ASan and UBSan.
 2. Logic tests (same target): 79 checks with a mock AMF and gNB over a TCP transport, including the load generator.
 3. VM chaos suite (`lab/chaos_suite.py`): real SCTP, Open5GS and UERANSIM. It covers baseline, `kill -9`, black hole, reconnect, weights, drain, probe and `SIGSTOP`, with PASS, FAIL and XFAIL asserts.
 

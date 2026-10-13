@@ -22,6 +22,14 @@ int main() {
     uint8_t junk[] = {0x00, 0x0f, 0x40, 0x7f, 0x00, 0x00, 0x04, 0x00, 0x55};
     for (size_t n = 0; n <= sizeof junk; n++) ngap::peek(junk, n);
     for (auto& v : VECS) for (size_t n = 0; n < v.pdu.size(); n++) ngap::peek(v.pdu.data(), n);  // her kesilme noktası
+    // ---- bozuk INTEGER uzunlukları: spec aralığını aşan değerler reddedilir (int64 taşması olmadan)
+    for (auto& v : BAD_VECS) {
+        auto i = ngap::peek(v.pdu.data(), v.pdu.size());
+        CHECK(i.ok, "%s: başlık geçerli olmalı", v.name);
+        CHECK(i.amf == v.amf, "%s: amf %lld != %lld", v.name, (long long)i.amf, (long long)v.amf);
+        CHECK(i.ran == v.ran, "%s: ran %lld != %lld", v.name, (long long)i.ran, (long long)v.ran);
+        for (size_t n = 0; n < v.pdu.size(); n++) ngap::peek(v.pdu.data(), n);
+    }
     // ---- NG Reset kurucu (pycrate referansı)
     {
         auto all = ngap::build_ng_reset({});
