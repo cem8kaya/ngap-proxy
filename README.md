@@ -11,7 +11,10 @@ dependencies beyond `libsctp`.
 > **Status: lab and education tool, not a production load balancer.** It is single
 > threaded, has no write queue and no slice awareness (see [Limitations](#limitations)).
 
-![AMF failure scene of the walkthrough](docs/media/walkthrough.gif)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/walkthrough.gif">
+  <img alt="AMF failure scene of the walkthrough" src="docs/media/walkthrough-light.gif">
+</picture>
 
 [60 s video](docs/media/n2-proxy-walkthrough.mp4) ·
 [Interactive walkthrough](docs/walkthrough/n2-proxy-walkthrough.html) (single HTML file: download and open it, or serve it with GitHub Pages)
